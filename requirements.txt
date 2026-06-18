@@ -1,0 +1,13 @@
+fastapi[standard]
+uvicorn[standard]
+supabase
+langgraph
+langchain
+langchain-groq
+langchain-core
+python-dotenv
+pydantic
+pydantic-settings
+elevenlabs
+httpx
+python-multipart
