@@ -91,6 +91,21 @@ export const api = {
     return data.text ?? "";
   },
 
+  /** Text-to-speech: convert text into spoken audio, return a playable URL. */
+  async tts(text: string, voiceId?: string): Promise<string> {
+    const res = await fetch(`${API_BASE}/voice/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice_id: voiceId ?? null }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail ?? `${res.status} ${res.statusText}`);
+    }
+    const audio = await res.blob();
+    return URL.createObjectURL(audio);
+  },
+
   /** Voice turn: send recorded audio, get spoken reply + transcript/decision. */
   async voiceTalk(blob: Blob, customerId?: string) {
     const form = new FormData();

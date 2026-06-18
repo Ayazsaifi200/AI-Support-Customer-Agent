@@ -24,8 +24,10 @@ export default function ChatPanel() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     api.customers().then(setCustomers).catch(() => setCustomers([]));
@@ -41,24 +43,45 @@ export default function ChatPanel() {
       .map((m) => ({ role: m.role, content: m.content }));
   }
 
-  async function sendText() {
-    const text = input.trim();
-    if (!text || busy) return;
-    setInput("");
+  /** Speak text via ElevenLabs TTS and auto-play it. */
+  async function speak(text: string): Promise<string | undefined> {
+    const clean = text.trim();
+    if (!clean) return undefined;
+    try {
+      const url = await api.tts(clean);
+      audioRef.current?.pause();
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      setSpeaking(true);
+      audio.onended = () => setSpeaking(false);
+      audio.onerror = () => setSpeaking(false);
+      void audio.play().catch(() => setSpeaking(false));
+      return url;
+    } catch (err) {
+      setSpeaking(false);
+      reasoningStore.marker(`⚠️ Voice reply failed: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /** Core turn: send a message through the agent; optionally speak the reply. */
+  async function submitMessage(text: string, withVoice = false) {
+    const clean = text.trim();
+    if (!clean || busy) return;
     setBusy(true);
-    reasoningStore.marker(`User: "${text}"`);
+    reasoningStore.marker(`User: "${clean}"`);
 
     const hist = history();
     setMessages((m) => [
       ...m,
-      { role: "user", content: text },
+      { role: "user", content: clean },
       { role: "assistant", content: "", pending: true },
     ]);
 
     let reply = "";
     let decision: string | null = null;
     try {
-      await api.chatStream(text, customerId || undefined, hist, (e) => {
+      await api.chatStream(clean, customerId || undefined, hist, (e) => {
         reasoningStore.add(e);
         if (e.type === "final") {
           reply = e.reply;
@@ -71,35 +94,58 @@ export default function ChatPanel() {
       reply = `⚠️ ${(err as Error).message}`;
     }
 
+    const finalReply = reply || "(no response)";
     setMessages((m) => {
       const copy = [...m];
       copy[copy.length - 1] = {
         role: "assistant",
-        content: reply || "(no response)",
+        content: finalReply,
         decision,
       };
       return copy;
     });
     setBusy(false);
+
+    if (withVoice && reply && !reply.startsWith("⚠️")) {
+      const audioUrl = await speak(reply);
+      if (audioUrl) {
+        setMessages((m) => {
+          const copy = [...m];
+          for (let i = copy.length - 1; i >= 0; i--) {
+            if (copy[i].role === "assistant") {
+              copy[i] = { ...copy[i], audioUrl };
+              break;
+            }
+          }
+          return copy;
+        });
+      }
+    }
+  }
+
+  async function sendText() {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    await submitMessage(text, false);
   }
 
   async function transcribeVoice(blob: Blob) {
     if (busy || transcribing) return;
     setTranscribing(true);
+    let text = "";
     try {
-      const text = await api.transcribe(blob);
-      const clean = text.trim();
-      if (clean) {
-        setInput((prev) => (prev ? `${prev} ${clean}` : clean));
-        inputRef.current?.focus();
-      } else {
-        setInput("");
-        inputRef.current?.focus();
-      }
+      text = (await api.transcribe(blob)).trim();
     } catch (err) {
       reasoningStore.marker(`⚠️ Transcription failed: ${(err as Error).message}`);
     } finally {
       setTranscribing(false);
+    }
+    if (text) {
+      // Full spoken loop: STT -> agent -> TTS (spoken reply auto-plays).
+      await submitMessage(text, true);
+    } else {
+      inputRef.current?.focus();
     }
   }
 
@@ -173,7 +219,13 @@ export default function ChatPanel() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && sendText()}
-          placeholder={transcribing ? "Transcribing your voice…" : "Type or use the mic…"}
+          placeholder={
+            transcribing
+              ? "Transcribing your voice…"
+              : speaking
+              ? "Speaking the reply…"
+              : "Type or use the mic…"
+          }
           disabled={busy}
           className="flex-1 rounded-full border border-zinc-300 bg-transparent px-4 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-500 focus:border-blue-500 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-400"
         />
