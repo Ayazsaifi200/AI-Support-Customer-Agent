@@ -128,6 +128,22 @@ def build_initial_messages(
     return messages
 
 
+def _humanize_error(exc: Exception) -> str:
+    """Turn raw provider errors into a short, user-friendly message."""
+    text = str(exc).lower()
+    if "tool_use_failed" in text or "failed to call a function" in text:
+        return (
+            "Sorry, I had trouble processing that request just now. "
+            "Please rephrase it or try again in a moment."
+        )
+    if "rate limit" in text or "429" in text or "rate_limit" in text:
+        return (
+            "I'm receiving a lot of requests right now and hit a usage limit. "
+            "Please try again in a little while."
+        )
+    return "Sorry, something went wrong while handling your request. Please try again."
+
+
 def run_agent(
     user_message: str,
     customer_id: Optional[str] = None,
@@ -135,7 +151,10 @@ def run_agent(
 ) -> dict:
     """Run the agent loop and return the final reply plus tool-call trace."""
     messages = build_initial_messages(user_message, customer_id, history)
-    result = get_agent_graph().invoke({"messages": messages})
+    try:
+        result = get_agent_graph().invoke({"messages": messages})
+    except Exception as exc:
+        return {"reply": _humanize_error(exc), "decision": None, "tool_calls": []}
     final_messages = result["messages"]
 
     reply = ""
@@ -172,24 +191,30 @@ def stream_agent(
     decision = None
     reply = ""
 
-    for update in get_agent_graph().stream({"messages": messages}, stream_mode="updates"):
-        for node, payload in update.items():
-            for msg in payload.get("messages", []):
-                cls = msg.__class__.__name__
-                if cls == "AIMessage":
-                    tcs = getattr(msg, "tool_calls", None) or []
-                    if tcs:
-                        for tc in tcs:
-                            if tc.get("name") == "submit_refund_decision":
-                                decision = (tc.get("args") or {}).get("decision")
-                            yield {"type": "tool_call", "name": tc.get("name"), "args": tc.get("args")}
-                    elif isinstance(msg.content, str) and msg.content.strip():
-                        reply = msg.content
-                elif cls == "ToolMessage":
-                    yield {
-                        "type": "tool_result",
-                        "name": getattr(msg, "name", "tool"),
-                        "output": msg.content if isinstance(msg.content, str) else str(msg.content),
-                    }
+    try:
+        for update in get_agent_graph().stream({"messages": messages}, stream_mode="updates"):
+            for node, payload in update.items():
+                for msg in payload.get("messages", []):
+                    cls = msg.__class__.__name__
+                    if cls == "AIMessage":
+                        tcs = getattr(msg, "tool_calls", None) or []
+                        if tcs:
+                            for tc in tcs:
+                                if tc.get("name") == "submit_refund_decision":
+                                    decision = (tc.get("args") or {}).get("decision")
+                                yield {"type": "tool_call", "name": tc.get("name"), "args": tc.get("args")}
+                        elif isinstance(msg.content, str) and msg.content.strip():
+                            reply = msg.content
+                    elif cls == "ToolMessage":
+                        yield {
+                            "type": "tool_result",
+                            "name": getattr(msg, "name", "tool"),
+                            "output": msg.content if isinstance(msg.content, str) else str(msg.content),
+                        }
+    except Exception as exc:
+        friendly = _humanize_error(exc)
+        yield {"type": "tool_result", "name": "—", "output": f"Error: {exc}"}
+        yield {"type": "final", "reply": friendly, "decision": None}
+        return
 
     yield {"type": "final", "reply": reply, "decision": decision}

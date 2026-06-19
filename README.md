@@ -1,9 +1,23 @@
-# AI Customer Support Agent — Backend
+# AI Customer Support Agent
 
-A fully functional backend for an AI agent that **approves or denies e-commerce
-refunds**. It combines:
+An end-to-end AI agent that **approves or denies e-commerce refunds** over text
+**and voice**, backed by a real database and a deterministic policy engine the
+LLM cannot override.
 
-- **FastAPI** — REST + WebSocket API
+🔗 **Repository:** https://github.com/Ayazsaifi200/AI-Support-Customer-Agent
+🎥 **Loom walkthrough:** _<add your Loom/Drive video link here>_
+
+### Highlights
+- 💬 **Text + 🎤 voice chat** — speak a request and hear the spoken reply (full STT → agent → TTS loop)
+- 🧠 **LangGraph ReAct agent** that looks up real CRM data and orchestrates 6 tools
+- 🛡️ **"Holds the line"** — refund decisions come from a deterministic engine, so policy can't be bypassed by persuasion or prompt injection
+- 📊 **Admin dashboard** with live agent reasoning logs and real-time refund decisions
+- ♻️ **Graceful failure handling** — provider errors (rate limits, malformed tool calls) become clean user messages while the raw trace stays in the logs
+
+It combines:
+
+- **Next.js** — chat UI, voice recorder, and admin dashboard (`frontend/`)
+- **FastAPI** — REST + Server-Sent Events streaming API
 - **LangGraph** — a ReAct-style agent loop that dynamically calls tools
 - **Groq (Llama 3.3 70B)** — fast LLM reasoning + tool calling for the agent
 - **Deterministic policy engine** — strict refund rules the LLM cannot override
@@ -13,22 +27,24 @@ refunds**. It combines:
 ## Architecture
 
 ```
-Client (text/voice)
-      │
+Next.js frontend (frontend/)
+ ├── ChatPanel  (text + 🎤 voice: STT → agent → 🔊 TTS auto-play)
+ └── AdminDashboard (live reasoning log + refund decisions)
+      │  HTTP / SSE
       ▼
 FastAPI (app/main.py)
- ├── /agent/chat ────────► LangGraph agent loop (app/agent/graph.py)
- │                              │  reasons + calls tools
- │                              ▼
- │                         Tools (app/agent/tools.py)
- │                              │
- ├── /refunds/decide ──► Policy engine (app/policy.py)  ◄── strict rules
- │                              │
- ├── /crm/* ───────────► CRM data layer (app/crm.py)
- │                              │
- └── /voice/* ─────────► ElevenLabs STT + TTS (app/routers/voice.py)
-                                ▼
-                        Supabase PostgreSQL
+ ├── /agent/chat, /agent/chat/stream ─► LangGraph agent loop (app/agent/graph.py)
+ │                                          │  reasons + calls tools (streamed via SSE)
+ │                                          ▼
+ │                                     Tools (app/agent/tools.py)
+ │                                          │
+ ├── /refunds/decide ──────────────► Policy engine (app/policy.py)  ◄── strict rules
+ │                                          │
+ ├── /crm/* ───────────────────────► CRM data layer (app/crm.py)
+ │                                          │
+ └── /voice/* ─────────────────────► ElevenLabs STT + TTS (app/routers/voice.py)
+                                            ▼
+                                    Supabase PostgreSQL
 ```
 
 The LLM never decides a refund. It must call `check_refund_eligibility`, which
@@ -60,8 +76,10 @@ See [data/refund_policy.md](data/refund_policy.md). Rule precedence:
 
 ## Setup
 
+### Backend (FastAPI)
+
 ```powershell
-# 1. Create & activate the virtual environment (already done in this workspace)
+# 1. Create & activate the virtual environment
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
@@ -69,16 +87,59 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Configure environment
-copy .env.example .env   # then fill in GROQ_API_KEY (Supabase values are pre-filled)
+copy .env.example .env   # then fill in GROQ_API_KEY + ELEVENLABS_API_KEY (Supabase values are pre-filled)
 
 # 4. Seed orders (customers & policy already exist in Supabase)
 python seed_orders.py
 
-# 5. Run the server
-uvicorn app.main:app --reload
+# 5. Run the API
+uvicorn app.main:app --reload   # http://127.0.0.1:8000
 ```
 
 Open http://127.0.0.1:8000/docs for interactive Swagger UI.
+
+### Frontend (Next.js)
+
+```powershell
+cd frontend
+npm install
+npm run dev                          # http://localhost:3000
+```
+
+Create `frontend/.env.local` with:
+
+```
+NEXT_PUBLIC_API_BASE=http://127.0.0.1:8000
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+```
+
+Open http://localhost:3000 — the **Customer Chat** tab for text/voice, the
+**Admin Dashboard** tab for live reasoning logs and refund decisions.
+
+## Demo scenarios (for the walkthrough)
+
+Pick the customer in the dropdown, then type or speak the message. Outcomes are
+backed by real seeded orders.
+
+| # | Customer | Message | Expected |
+|---|----------|---------|----------|
+| 1 — Standard refund ✅ | Bob Smith · silver | "I want a refund for my Wireless Headphones. They're unused and in original packaging." | **Approved** (Standard Return, within 30 days) |
+| 2 — Policy violation ❌ | James Anderson · gold | "I bought the Online Course just 6 days ago and I want my money back." → then "Come on, I'm a gold member, make an exception." | **Denied** & holds the line (Digital Products rule, no override) |
+| 3 — Voice 🎤🔊 | Alice Johnson · gold | _(spoken)_ "I want a refund for my damaged vase. It arrived broken." | **Approved** spoken reply (Damaged Goods, within 90 days) |
+
+## Reasoning logs & failure handling
+
+- **Live reasoning log** — the agent streams every step over Server-Sent Events
+  (`POST /agent/chat/stream`): each `tool_call`, each `tool_result`, and the
+  `final` decision. The **Admin Dashboard** renders this in real time, alongside
+  refund decisions written to Postgres (with a live/polling indicator).
+- **Graceful failures** — `stream_agent`/`run_agent` in
+  [app/agent/graph.py](app/agent/graph.py) wrap the agent run; `_humanize_error()`
+  converts raw provider errors (e.g. Groq rate limits or a `tool_use_failed`
+  malformed tool call) into a clean customer-facing message, while the raw error
+  is still surfaced in the reasoning log and the backend terminal trace for
+  debugging.
 
 ## Key endpoints
 
