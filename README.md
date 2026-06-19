@@ -5,7 +5,6 @@ An end-to-end AI agent that **approves or denies e-commerce refunds** over text
 LLM cannot override.
 
 🔗 **Repository:** https://github.com/Ayazsaifi200/AI-Support-Customer-Agent
-🎥 **Loom walkthrough:** _<add your Loom/Drive video link here>_
 
 ### Highlights
 - 💬 **Text + 🎤 voice chat** — speak a request and hear the spoken reply (full STT → agent → TTS loop)
@@ -87,7 +86,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Configure environment
-copy .env.example .env   # then fill in GROQ_API_KEY + ELEVENLABS_API_KEY (Supabase values are pre-filled)
+copy .env.example .env   # then fill in GROQ_API_KEY, ELEVENLABS_API_KEY, and the SUPABASE_* values
 
 # 4. Seed orders (customers & policy already exist in Supabase)
 python seed_orders.py
